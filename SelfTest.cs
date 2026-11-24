@@ -37,11 +37,49 @@ static class SelfTest
             // 4. Move thật: 1 file + 1 thư mục
             var f = Path.Combine(src, "a.jar"); File.WriteAllText(f, "hi");
             var d = Directory.CreateDirectory(Path.Combine(src, "folder")).FullName; File.WriteAllText(Path.Combine(d, "x.txt"), "x");
-            int n = Mover.MoveInto(new[] { f, d }, mods, showDialogs: false);
+            int n = Mover.Run(new[] { f, d }, mods, copy: false, showDialogs: false);
             Check(n == 2 && File.Exists(Path.Combine(mods, "a.jar")) && File.Exists(Path.Combine(mods, "folder", "x.txt")) && !File.Exists(f), "move file + thư mục");
 
             // 5. Move vào chính thư mục đang chứa → bỏ qua
-            Check(Mover.MoveInto(new[] { Path.Combine(mods, "a.jar") }, mods, false) == 0, "bỏ qua khi đã ở đích");
+            Check(Mover.Run(new[] { Path.Combine(mods, "a.jar") }, mods, copy: false, showDialogs: false) == 0, "bỏ qua khi đã ở đích");
+
+            // 6. Copy thật: bản gốc phải còn nguyên
+            f = Path.Combine(mods, "a.jar"); d = Path.Combine(mods, "folder");
+            n = Mover.Run(new[] { f, d }, adb, copy: true, showDialogs: false);
+            Check(n == 2 && File.Exists(f) && File.Exists(Path.Combine(d, "x.txt"))
+                && File.ReadAllText(Path.Combine(adb, "a.jar")) == "hi" && File.Exists(Path.Combine(adb, "folder", "x.txt")), "copy file + thư mục, giữ bản gốc");
+
+            // 7. Thư mục vào chính thư mục con của nó → báo lỗi, không mất gì
+            foreach (var copy in new[] { true, false })
+            {
+                bool threw = false;
+                try { Mover.Run(new[] { mods }, d, copy, showDialogs: false); } catch (IOException) { threw = true; }
+                Check(threw && File.Exists(f) && File.Exists(Path.Combine(d, "x.txt")), $"thư mục vào chính nó, copy={copy}");
+            }
+
+            // 8. Thả vào đúng popup thật: nửa trái = copy, nửa phải = move
+            using var popup = new MovePopup(h);
+            _ = popup.Handle;
+            popup.Rebuild();
+            DragDropEffects Drop(string file, float at, DragDropEffects allowed = DragDropEffects.All)
+            {
+                var row = popup.Controls.OfType<SlotRow>().Single(r => r.AccessibleName == "Last use " + dl);
+                var e = Drag(row, at, allowed, file);
+                IDropTarget target = row;
+                target.OnDragEnter(e);
+                var shown = e.Effect;
+                target.OnDragDrop(e);
+                Check(e.Effect == DragDropEffects.None, "trả None cho Explorer");
+                Application.DoEvents();
+                return shown;
+            }
+            var c = Path.Combine(src, "c.txt"); File.WriteAllText(c, "c");
+            var m = Path.Combine(src, "m.txt"); File.WriteAllText(m, "m");
+            var ro = Path.Combine(src, "ro.txt"); File.WriteAllText(ro, "r");
+            Check(Drop(c, 0.1f) == DragDropEffects.Copy && File.Exists(c) && File.Exists(Path.Combine(dl, "c.txt")), "thả nửa trái → copy");
+            Check(Drop(m, 0.9f) == DragDropEffects.Move && !File.Exists(m) && File.Exists(Path.Combine(dl, "m.txt")), "thả nửa phải → move");
+            Check(Drop(ro, 0.9f, DragDropEffects.Copy) == DragDropEffects.None && File.Exists(ro), "nguồn cấm move → không làm gì");
+            Check(h.Entries.Single(x => x.Path == dl).Count == 3, "copy và move đều vào lịch sử");
         }
         finally { try { Directory.Delete(root, true); } catch { } }
 
@@ -49,7 +87,13 @@ static class SelfTest
         return fail;
     }
 
-    // Vẽ popup ra file PNG để xem giao diện.
+    static DragEventArgs Drag(Control row, float at, DragDropEffects allowed, string file)
+    {
+        var p = row.PointToScreen(new Point((int)(row.Width * at), row.Height / 2));
+        return new DragEventArgs(new DataObject(DataFormats.FileDrop, new[] { file }), 0, p.X, p.Y, allowed, DragDropEffects.None);
+    }
+
+    // Vẽ popup ra file PNG để xem giao diện (ô 1 đang trỏ Copy, ô 2 đang trỏ Move).
     public static void Snapshot(string png)
     {
         var dir = Path.Combine(Path.GetTempPath(), "QuickMoveSnap");
@@ -64,6 +108,9 @@ static class SelfTest
 
         using var p = new MovePopup(h);
         p.ShowNear(new Point(200, 200));
+        var rows = p.Controls.OfType<SlotRow>().ToList();
+        for (int i = 0; i < 2; i++)
+            ((IDropTarget)rows[i]).OnDragEnter(Drag(rows[i], i == 0 ? 0.1f : 0.9f, DragDropEffects.All, png));
         Application.DoEvents();
         using var bmp = new Bitmap(p.Width, p.Height);
         p.DrawToBitmap(bmp, new Rectangle(Point.Empty, p.Size));

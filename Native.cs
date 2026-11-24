@@ -64,5 +64,7 @@ static class Native
     {
         int round = 2; // DWMWCP_ROUND
         DwmSetWindowAttribute(hwnd, 33, ref round, sizeof(int));
+        int blue = 0xD47800; // màu viền (BGR), để popup tối không chìm vào Explorer nền tối
+        DwmSetWindowAttribute(hwnd, 34, ref blue, sizeof(int));
     }
 }
